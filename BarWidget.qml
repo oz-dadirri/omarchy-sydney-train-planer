@@ -101,7 +101,13 @@ BarWidget {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onAdapterUpdated: writeAdapter()
+    // No onAdapterUpdated auto-write here: pinTrip() sets four fileCfg
+    // properties one at a time, each of which would otherwise fire its own
+    // write with a half-updated object (racing the others and the final,
+    // fully-correct write below) — the exact shape of bug that can leave
+    // syd-train.json with a blanked-out origin/destination after tapping a
+    // journey. pinTrip's own explicit writeAdapter() call is the only save
+    // path; nothing else in this file mutates fileCfg.
     JsonAdapter {
       id: fileCfg
       property string apiKey: ""

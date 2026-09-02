@@ -1,15 +1,24 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Trip-planner popup. Built on KeyboardPanel (not PopupCard) so the origin /
-// destination text fields accept keyboard input, and following the network
-// plugin's passphrase-prompt pattern for the field wiring: text bound to a
-// backing property, an explicit `editing` flag gating PanelKeyCatcher, and
-// Qt.callLater(forceActiveFocus).
+// Trip-planner popup. Field wiring follows the network plugin's
+// passphrase-prompt pattern: text bound to a backing property, an explicit
+// `editing` flag gating PanelKeyCatcher, and Qt.callLater(forceActiveFocus).
+//
+// The window itself is a hand-built PanelWindow rather than qs.Ui's shared
+// KeyboardPanel. KeyboardPanel primes Wayland keyboard focus as Exclusive
+// for ~75ms on open, then downgrades to OnDemand — and on at least one
+// tested compositor that downgrade can leave the surface with no keyboard
+// focus at all (mouse clicks still land since pointer routing doesn't need
+// keyboard focus, but every keystroke is lost). akshar.radio-atlas sidesteps
+// this by tying WlrLayershell.keyboardFocus directly to a HoverHandler
+// instead of a one-shot timer, which is proven reliable here — this file
+// follows that same pattern.
 Panel {
   id: root
   moduleName: "io.github.ozdadirri.sydney-train-planer"
@@ -294,28 +303,62 @@ Panel {
     function hide(): void { root.close() }
   }
 
-  KeyboardPanel {
+  PanelWindow {
     id: panel
-    anchorItem: root.anchorItem
-    owner: root.barIdentity
-    bar: root.bar
-    open: root.opened
-    centerOnBar: true
-    focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(480))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight)
+    screen: root.anchorItem && root.anchorItem.QsWindow && root.anchorItem.QsWindow.window
+      ? root.anchorItem.QsWindow.window.screen : null
+    visible: root.opened
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+    WlrLayershell.namespace: "io.github.ozdadirri.sydney-train-planer"
+    WlrLayershell.layer: WlrLayer.Overlay
+    // Tied straight to the pointer, not a one-shot prime timer — see the
+    // import-block comment above for why.
+    WlrLayershell.keyboardFocus: root.opened && cardHover.hovered
+      ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+    // Input region is just the card: clicks elsewhere on screen pass
+    // through to whatever's beneath instead of being caught for
+    // outside-click dismissal (a KeyboardPanel convenience this hand-built
+    // window doesn't reproduce). Close via the bar pill, Escape, or picking
+    // a journey.
+    mask: Region { item: card }
 
-    PanelKeyCatcher {
-      id: keyCatcher
-      anchors.fill: parent
-      blocked: root.editing
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+    readonly property int barSize: root.bar ? root.bar.barSize : 0
+    readonly property int cardWidth: Math.min(Style.space(480), panel.width - Style.gapsOut * 2)
+    readonly property int cardHeight: Math.min(
+      content.implicitHeight + Style.spacing.popupPadding * 2 + Style.space(4),
+      panel.height - barSize - Style.gapsOut * 2)
 
-      Column {
-        id: content
-        width: parent.width
-        spacing: Style.space(10)
+    BorderSurface {
+      id: card
+      x: Math.round(panel.width / 2 - width / 2)
+      y: (root.bar && root.bar.position === "bottom")
+        ? panel.height - panel.barSize - height - Style.gapsOut
+        : panel.barSize + Style.gapsOut
+      width: panel.cardWidth
+      height: panel.cardHeight
+      color: Color.popups.background
+      borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+      padding: Style.spacing.popupPadding
+      radius: Style.cornerRadius
+
+      HoverHandler {
+        id: cardHover
+        onHoveredChanged: if (hovered) keyCatcher.forceActiveFocus()
+      }
+
+      PanelKeyCatcher {
+        id: keyCatcher
+        anchors.fill: parent
+        blocked: root.editing
+        onCloseRequested: root.close()
+        onTabRequested: function(direction) { root.switchPanel(direction) }
+
+        Column {
+          id: content
+          width: parent.width
+          spacing: Style.space(10)
 
         // Header
         Item {
@@ -368,6 +411,19 @@ Panel {
             }
             onActiveFocusChanged: if (activeFocus) { root.editing = true; root.activeField = "origin" }
             Keys.onEscapePressed: { root.originText = ""; root.stopEditing() }
+            // A bare click doesn't reliably hand this field Qt's active
+            // focus inside the KeyboardPanel/PanelKeyCatcher stack (see the
+            // weather and network plugins, which always drive focus via an
+            // explicit forceActiveFocus() call rather than relying on the
+            // TextField's own click handling). Disabled once already
+            // focused so a click mid-text still repositions the cursor
+            // normally instead of re-grabbing focus every time.
+            MouseArea {
+              anchors.fill: parent
+              enabled: !originField.activeFocus
+              cursorShape: Qt.IBeamCursor
+              onPressed: Qt.callLater(function() { originField.forceActiveFocus() })
+            }
           }
           Button {
             id: locBtn
@@ -415,6 +471,12 @@ Panel {
             }
             onActiveFocusChanged: if (activeFocus) { root.editing = true; root.activeField = "dest" }
             Keys.onEscapePressed: { root.destText = ""; root.stopEditing() }
+            MouseArea {
+              anchors.fill: parent
+              enabled: !destField.activeFocus
+              cursorShape: Qt.IBeamCursor
+              onPressed: Qt.callLater(function() { destField.forceActiveFocus() })
+            }
           }
         }
 
@@ -579,6 +641,7 @@ Panel {
           color: Qt.darker(root.bar.foreground, 1.5)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
+        }
         }
       }
     }
