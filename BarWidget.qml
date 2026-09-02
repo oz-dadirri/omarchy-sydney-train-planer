@@ -7,8 +7,8 @@ import "Model.js" as Model
 
 // Bar pill for the Sydney Train Planner. Shows a live countdown to the next
 // departure on the saved default trip and opens the planner popup on click.
-// Networking is done exactly like omarchy.weather: a `curl` Process per
-// request, last-good data kept on failure.
+// The popup lives in Panel.qml (a KeyboardPanel, so its text fields accept
+// input) and is loaded here, mirroring the built-in weather/clock plugins.
 BarWidget {
   id: root
   moduleName: "io.github.ozdadirri.sydney-train-planer"
@@ -30,21 +30,27 @@ BarWidget {
   // ---- runtime state -----------------------------------------------------
   property var trips: []               // parsed journeys for the default trip
   property date now: new Date()
-  property bool opened: false
-  property bool popoutSwitchClosing: false
   property string lastError: ""
   property date lastUpdated: new Date(0)
 
   readonly property var nextTrip: trips.length ? trips[0] : null
   readonly property string pillIcon: ""   // nf-md-train
 
-  function open() { opened = true }
-  function close() { opened = false }
-  function togglePanel() { opened = !opened }
-  function closeForPopoutSwitch() {
-    popoutSwitchClosing = true
-    close()
-    Qt.callLater(function() { root.popoutSwitchClosing = false })
+  // ---- panel lifecycle (forwarded to the loaded Panel.qml) ---------------
+  readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+  readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+
+  function open() { if (panelLoader.item) panelLoader.item.openFromHotkey() }
+  function close() { if (panelLoader.item) panelLoader.item.close() }
+  function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+  function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
+
+  function injectPanel() {
+    var t = panelLoader.item
+    if (!t) return
+    if ("bar" in t) t.bar = root.bar
+    if ("anchorItem" in t) t.anchorItem = pill
+    if ("hostWidget" in t) t.hostWidget = root
   }
 
   function pillText() {
@@ -152,10 +158,24 @@ BarWidget {
   onApiKeyChanged: refresh()
   onOriginIdChanged: refresh()
   onDestinationIdChanged: refresh()
+  onBarChanged: injectPanel()
 
   visible: true
   implicitWidth: pill.implicitWidth
   implicitHeight: pill.implicitHeight
+
+  Loader {
+    id: panelLoader
+    active: true
+    source: Qt.resolvedUrl("Panel.qml")
+    visible: false
+    onLoaded: {
+      root.injectPanel()
+      Qt.callLater(root.injectPanel)
+      var t = panelLoader.item
+      if (t && t.pinned) t.pinned.connect(root.pinTrip)
+    }
+  }
 
   WidgetButton {
     id: pill
@@ -176,58 +196,6 @@ BarWidget {
           root.bar.run("omarchy-notification-send 'Next: " + Model.countdownLabel(root.nextTrip, root.now)
             + " " + (root.nextTrip.lines.length ? root.nextTrip.lines[0] : "") + "'")
       } else root.togglePanel()
-    }
-  }
-
-  // --- outside-click dismissal (same approach as celestune-bar) ------------
-  Repeater {
-    model: root.bar ? root.bar.clickTargets : []
-    delegate: Item {
-      id: obs
-      required property var modelData
-      width: 0; height: 0; visible: false
-      Connections {
-        target: obs.modelData
-        ignoreUnknownSignals: true
-        function onPressed(button) {
-          if (root.opened && obs.modelData !== pill) root.close()
-        }
-      }
-    }
-  }
-
-  Connections {
-    target: root.bar
-    ignoreUnknownSignals: true
-    function onActivePopoutChanged() {
-      if (root.opened && root.bar && root.bar.activePopout && root.bar.activePopout !== root)
-        root.close()
-    }
-  }
-
-  PopupCard {
-    id: popup
-    anchorItem: root
-    bar: root.bar
-    owner: root
-    open: root.opened
-    centerOnBar: true
-    contentWidth: popup.fittedContentWidth(Style.space(480))
-    contentHeight: popup.fittedContentHeight(planner.implicitHeight)
-
-    Planner {
-      id: planner
-      anchors.fill: parent
-      bar: root.bar
-      apiKey: root.apiKey
-      now: root.now
-      resultCount: root.resultCount
-      originSeedId: root.originId
-      originSeedName: root.originName
-      destSeedId: root.destinationId
-      destSeedName: root.destinationName
-      lastUpdated: root.lastUpdated
-      onPinned: function(origin, destination) { root.pinTrip(origin, destination) }
     }
   }
 }
