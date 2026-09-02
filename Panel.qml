@@ -399,6 +399,16 @@ Panel {
         acceptedButtons: Qt.AllButtons
       }
 
+      // BorderSurface's `padding` only shows up via these inset properties —
+      // it does nothing to a child anchored straight to the card itself, so
+      // without this the content sat flush against the border.
+      Item {
+        anchors.fill: parent
+        anchors.topMargin: card.contentTopInset
+        anchors.rightMargin: card.contentRightInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
+
       PanelKeyCatcher {
         id: keyCatcher
         anchors.fill: parent
@@ -795,6 +805,7 @@ Panel {
           font.pixelSize: Style.font.caption
         }
         }
+      }
       }
     }
   }
