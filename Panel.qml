@@ -372,7 +372,7 @@ Panel {
           Button {
             id: locBtn
             anchors.verticalCenter: parent.verticalCenter
-            iconText: root.locating ? "󰦖" : ""
+            iconText: root.locating ? "󰦖" : "󰆤"
             iconSpinning: root.locating
             tooltipText: "Use current location"
             foreground: root.bar.foreground
