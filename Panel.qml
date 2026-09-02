@@ -368,13 +368,6 @@ Panel {
             }
             onActiveFocusChanged: if (activeFocus) { root.editing = true; root.activeField = "origin" }
             Keys.onEscapePressed: { root.originText = ""; root.stopEditing() }
-            TapHandler {
-              onTapped: {
-                root.editing = true
-                root.activeField = "origin"
-                Qt.callLater(function() { originField.forceActiveFocus() })
-              }
-            }
           }
           Button {
             id: locBtn
@@ -422,13 +415,6 @@ Panel {
             }
             onActiveFocusChanged: if (activeFocus) { root.editing = true; root.activeField = "dest" }
             Keys.onEscapePressed: { root.destText = ""; root.stopEditing() }
-            TapHandler {
-              onTapped: {
-                root.editing = true
-                root.activeField = "dest"
-                Qt.callLater(function() { destField.forceActiveFocus() })
-              }
-            }
           }
         }
 
