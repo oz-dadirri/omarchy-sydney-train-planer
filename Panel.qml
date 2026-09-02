@@ -105,6 +105,15 @@ Panel {
   property bool locating: false
   property date lastUpdated: new Date(0)
   property date now: new Date()
+  // Index into `trips` of the journey whose leg-by-leg detail (interchange
+  // stops, platforms, times) is expanded; -1 when none is. Reset whenever
+  // a fresh set of journeys comes in so a stale expansion can't point at
+  // the wrong trip.
+  property int expandedTripIndex: -1
+  // Which trip's pin button most recently fired, so its icon can flash a
+  // checkmark for a moment — pinning a trip that's already saved writes
+  // identical JSON, which is otherwise a silent no-op.
+  property int justPinnedIndex: -1
 
   property string activeField: ""     // "origin" | "dest" | ""
   property var suggestions: []
@@ -243,6 +252,8 @@ Panel {
       onStreamFinished: {
         var parsed = Model.parseTrip(text)
         root.trips = parsed
+        root.expandedTripIndex = -1
+        root.justPinnedIndex = -1
         root.status = parsed.length ? "" : "No journeys found"
         if (parsed.length) root.lastUpdated = new Date()
       }
@@ -288,6 +299,12 @@ Panel {
   }
 
   Timer {
+    id: justPinnedTimer
+    interval: 1200
+    onTriggered: root.justPinnedIndex = -1
+  }
+
+  Timer {
     interval: 15000
     repeat: true
     running: root.opened
@@ -317,18 +334,40 @@ Panel {
     // import-block comment above for why.
     WlrLayershell.keyboardFocus: root.opened && cardHover.hovered
       ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
-    // Input region is just the card: clicks elsewhere on screen pass
-    // through to whatever's beneath instead of being caught for
-    // outside-click dismissal (a KeyboardPanel convenience this hand-built
-    // window doesn't reproduce). Close via the bar pill, Escape, or picking
-    // a journey.
-    mask: Region { item: card }
-
     readonly property int barSize: root.bar ? root.bar.barSize : 0
+    readonly property string barPos: root.bar ? root.bar.position : "top"
+    readonly property bool barHorizontal: barPos === "top" || barPos === "bottom"
     readonly property int cardWidth: Math.min(Style.space(480), panel.width - Style.gapsOut * 2)
     readonly property int cardHeight: Math.min(
       content.implicitHeight + Style.spacing.popupPadding * 2 + Style.space(4),
       panel.height - barSize - Style.gapsOut * 2)
+
+    // Full-screen mask minus the bar strip itself: a click anywhere else on
+    // screen needs to reach this window so `dismissArea` below can close
+    // it (matching KeyboardPanel's outside-click-to-dismiss), while the bar
+    // strip is carved out so its own widgets keep receiving clicks
+    // directly, unaffected by this window sitting above it.
+    mask: Region {
+      width: panel.width
+      height: panel.height
+      regions: [
+        Region {
+          intersection: Intersection.Subtract
+          x: panel.barPos === "right" ? panel.width - panel.barSize : 0
+          y: panel.barPos === "bottom" ? panel.height - panel.barSize : 0
+          width: panel.barHorizontal ? panel.width : panel.barSize
+          height: panel.barHorizontal ? panel.barSize : panel.height
+        }
+      ]
+    }
+
+    // Catches every click on screen while open; the card has its own
+    // MouseArea (below) so clicks on it don't bubble up here.
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.AllButtons
+      onClicked: root.close()
+    }
 
     BorderSurface {
       id: card
@@ -346,6 +385,18 @@ Panel {
       HoverHandler {
         id: cardHover
         onHoveredChanged: if (hovered) keyCatcher.forceActiveFocus()
+      }
+
+      // Swallows clicks that land on the card but miss every interactive
+      // descendant (a journey row's padding, blank space below the list),
+      // so they don't fall through to the full-screen dismissArea behind
+      // and close the panel. Declared before the interactive content below
+      // so those items — being later siblings, on top in the stacking
+      // order — still get first claim on any click within their own
+      // bounds.
+      MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
       }
 
       PanelKeyCatcher {
@@ -543,92 +594,193 @@ Panel {
           font.italic: true
         }
 
-        // Journeys
+        // Journeys. Tapping a row expands/collapses its leg-by-leg detail
+        // (interchange stops, platforms, times); pinning the trip to the
+        // bar has its own explicit button so it doesn't fight that tap.
         Repeater {
           model: root.trips.slice(0, root.resultCount)
-          Rectangle {
+          Column {
             required property var modelData
+            required property int index
             width: parent.width
-            height: jCol.implicitHeight + Style.space(12)
-            radius: Style.cornerRadius
-            color: jArea.containsMouse
-              ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent"
 
-            Column {
-              id: jCol
-              anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.leftMargin: Style.space(6)
-              anchors.rightMargin: Style.space(6)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
+            Rectangle {
+              width: parent.width
+              height: jCol.implicitHeight + Style.space(12)
+              radius: Style.cornerRadius
+              color: jArea.containsMouse || root.expandedTripIndex === index
+                ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent"
 
-              Row {
-                width: parent.width
-                spacing: Style.space(10)
-                Text {
-                  width: Style.space(66)
-                  text: root.countdown(modelData.depEstimated)
-                  color: root.bar.foreground
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.body
-                  font.bold: true
+              Column {
+                id: jCol
+                anchors.left: parent.left
+                anchors.right: pinBtn.left
+                anchors.rightMargin: Style.space(6)
+                anchors.leftMargin: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(2)
+
+                Row {
+                  width: parent.width
+                  spacing: Style.space(10)
+                  Text {
+                    width: Style.space(66)
+                    text: root.countdown(modelData.depEstimated)
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+                  Text {
+                    text: root.fmtTime(modelData.depEstimated) + " → " + root.fmtTime(modelData.arrEstimated)
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    text: (modelData.durationMin != null ? "· " + modelData.durationMin + " min" : "")
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
                 }
-                Text {
-                  text: root.fmtTime(modelData.depEstimated) + " → " + root.fmtTime(modelData.arrEstimated)
-                  color: root.bar.foreground
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                Text {
-                  text: (modelData.durationMin != null ? "· " + modelData.durationMin + " min" : "")
-                  color: Qt.darker(root.bar.foreground, 1.4)
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  anchors.verticalCenter: parent.verticalCenter
+                Row {
+                  width: parent.width
+                  spacing: Style.space(8)
+                  Text {
+                    width: Style.space(66)
+                    text: (modelData.lines && modelData.lines.length) ? modelData.lines.join(" › ") : modelData.modes.join(", ")
+                    color: Color.accent
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    visible: modelData.platform !== ""
+                    text: "Plat " + modelData.platform
+                    color: Qt.darker(root.bar.foreground, 1.5)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    visible: modelData.changes > 0
+                    text: modelData.changes + " chg"
+                    color: Qt.darker(root.bar.foreground, 1.5)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    visible: modelData.delayMin > 0
+                    text: "+" + modelData.delayMin + " min late"
+                    color: Color.urgent
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
                 }
               }
-              Row {
-                width: parent.width
-                spacing: Style.space(8)
-                Text {
-                  width: Style.space(66)
-                  text: (modelData.lines && modelData.lines.length) ? modelData.lines.join(" › ") : modelData.modes.join(", ")
-                  color: Color.accent
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-                Text {
-                  visible: modelData.platform !== ""
-                  text: "Plat " + modelData.platform
-                  color: Qt.darker(root.bar.foreground, 1.5)
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-                Text {
-                  visible: modelData.changes > 0
-                  text: modelData.changes + " chg"
-                  color: Qt.darker(root.bar.foreground, 1.5)
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-                Text {
-                  visible: modelData.delayMin > 0
-                  text: "+" + modelData.delayMin + " min late"
-                  color: Color.urgent
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
+
+              MouseArea {
+                id: jArea
+                anchors.fill: parent
+                anchors.rightMargin: pinBtn.width + Style.space(6)
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.expandedTripIndex = (root.expandedTripIndex === index ? -1 : index)
+              }
+
+              Button {
+                id: pinBtn
+                // Plain x/y instead of anchors.right: this Rectangle's other
+                // two children each have a binding that reaches pinBtn
+                // (jCol.anchors.right: pinBtn.left, jArea's rightMargin:
+                // pinBtn.width + ...); with anchors.right used here too,
+                // pinBtn's own x stayed stuck at 0 (logged at runtime)
+                // instead of resolving against parent.width, which hid the
+                // button under jCol/jArea entirely. Plain bindings resolve
+                // reliably where the anchor did not.
+                x: parent.width - width - Style.space(4)
+                y: (parent.height - height) / 2
+                // Briefly swap to a checkmark so a re-pin of the already-
+                // saved trip still gives feedback — writing identical JSON
+                // is a silent no-op otherwise.
+                iconText: root.justPinnedIndex === index ? "󰄬" : "󰐃"
+                tooltipText: "Pin this trip to the bar"
+                foreground: root.bar.foreground
+                verticalPadding: 2
+                horizontalPadding: 4
+                onClicked: {
+                  root.editing = false
+                  root.pinned(root.originStop, root.destStop)
+                  root.justPinnedIndex = index
+                  justPinnedTimer.restart()
                 }
               }
             }
-            MouseArea {
-              id: jArea
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                root.editing = false
-                root.pinned(root.originStop, root.destStop)
+
+            // Leg-by-leg detail: interchange stops, platforms, and times.
+            Column {
+              width: parent.width
+              visible: root.expandedTripIndex === index
+              leftPadding: Style.space(6)
+              rightPadding: Style.space(6)
+              topPadding: Style.space(4)
+              bottomPadding: Style.space(6)
+              spacing: Style.space(6)
+
+              Repeater {
+                model: modelData.legs || []
+                Column {
+                  required property var modelData
+                  required property int index
+                  width: parent.width - Style.space(12)
+                  spacing: Style.space(1)
+
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    Text {
+                      text: modelData.isTransit ? modelData.line : "Walk"
+                      color: modelData.isTransit ? Color.accent : Qt.darker(root.bar.foreground, 1.4)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: true
+                    }
+                    Text {
+                      visible: modelData.isTransit
+                      text: "(" + modelData.mode + ")"
+                      color: Qt.darker(root.bar.foreground, 1.5)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                  }
+                  Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: root.fmtTime(modelData.depEstimated) + "  " + modelData.originName
+                      + (modelData.originPlatform !== "" ? " · Plat " + modelData.originPlatform : "")
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: root.fmtTime(modelData.arrEstimated) + "  " + modelData.destName
+                      + (modelData.destPlatform !== "" ? " · Plat " + modelData.destPlatform : "")
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    visible: modelData.waitMin !== null
+                    text: "Change · " + modelData.waitMin + " min wait"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.italic: true
+                  }
+                }
               }
             }
           }
