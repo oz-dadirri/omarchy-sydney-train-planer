@@ -140,9 +140,51 @@ function lineLabel(leg) {
   return String(tr.disassembledName || tr.number || tr.name || "").trim()
 }
 
+function modeLabel(leg) {
+  if (!isTransitLeg(leg)) return "Walk"
+  var cls = leg.transportation.product ? leg.transportation.product.class : undefined
+  return MODE_LABELS[String(cls)] || "Service"
+}
+
+function stopName(point) {
+  if (!point) return ""
+  return String(point.name || point.disassembledName || "")
+}
+
+// One row per leg of the journey (walk legs included), for the tap-to-expand
+// detail view: line/mode, origin/destination stop names, platforms and
+// estimated times, plus the wait between this leg's arrival and the next
+// leg's departure at an interchange (null on the final leg).
+function legDetails(legs) {
+  var out = []
+  for (var i = 0; i < legs.length; i++) {
+    var leg = legs[i]
+    var dep = legTime(leg.origin, "dep")
+    var arr = legTime(leg.destination, "arr")
+    var next = legs[i + 1]
+    var waitMin = next ? minutesBetween(arr.estimated, legTime(next.origin, "dep").estimated) : null
+    out.push({
+      isTransit: isTransitLeg(leg),
+      mode: modeLabel(leg),
+      line: lineLabel(leg),
+      originName: stopName(leg.origin),
+      originPlatform: platformOf(leg.origin),
+      depEstimated: dep.estimated,
+      depPlanned: dep.planned,
+      destName: stopName(leg.destination),
+      destPlatform: platformOf(leg.destination),
+      arrEstimated: arr.estimated,
+      arrPlanned: arr.planned,
+      durationMin: minutesBetween(dep.estimated, arr.estimated),
+      waitMin: (waitMin !== null && waitMin >= 0) ? waitMin : null
+    })
+  }
+  return out
+}
+
 // -> [{ depEstimated, depPlanned, arrEstimated, arrPlanned, durationMin,
 //       delayMin, changes, platform, lines:[..], modes:[..],
-//       originName, destName }]
+//       originName, destName, legs:[..] }]
 function parseTrip(raw) {
   try {
     var data = JSON.parse(String(raw || "{}"))
@@ -183,7 +225,8 @@ function parseTrip(raw) {
         lines: lines,
         modes: modes,
         originName: String((first.origin && (first.origin.name || first.origin.disassembledName)) || ""),
-        destName: String((last.destination && (last.destination.name || last.destination.disassembledName)) || "")
+        destName: String((last.destination && (last.destination.name || last.destination.disassembledName)) || ""),
+        legs: legDetails(legs)
       })
     }
     // API usually returns them ordered, but be defensive.

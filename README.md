@@ -8,7 +8,10 @@ Sydney / NSW public-transport trip right from the bar.
 - **Planner popup** — search any origin and destination, use your current
   location, swap ends, and see the next few journeys with duration, line,
   platform, interchanges and real-time delays.
-- Tap a journey to pin that origin/destination pair as the bar's default.
+- Tap a journey to expand a leg-by-leg breakdown — every stop, platform,
+  time and interchange wait along the way.
+- Pin a trip's origin/destination pair as the bar's default with the 📌
+  button on its row.
 
 Data comes from the official [Transport for NSW Open Data](https://opendata.transport.nsw.gov.au)
 Trip Planner API. **You bring your own free API key** — see below.
@@ -71,7 +74,8 @@ tapping a journey pins it and fills these in automatically.
 | Type in From / To | Live stop search (min 3 characters) |
 | ⌖ button | Fill From with the nearest stop to your IP location |
 | ⇅ button | Swap From and To |
-| Tap a journey | Pin this trip as the bar default |
+| Tap a journey | Expand its leg-by-leg detail (stops, platforms, times, interchange waits) |
+| 📌 on a journey | Pin this trip's origin/destination as the bar default |
 
 ## Remove
 
