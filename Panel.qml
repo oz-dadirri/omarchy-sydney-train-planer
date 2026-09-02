@@ -89,6 +89,18 @@ Panel {
   property string _pendingQuery: ""
   property string _pendingField: ""
 
+  // True while a text field is being edited. PanelKeyCatcher grabs keys with
+  // Keys.BeforeItem priority (for vim-style nav), so it must be `blocked`
+  // while typing or every keystroke is swallowed as a navigation command.
+  property bool editing: false
+  function syncEditing() {
+    editing = originField.activeFocus || destField.activeFocus
+  }
+  function stopEditing() {
+    editing = false
+    keyCatcher.forceActiveFocus()
+  }
+
   function seedFromConfig() {
     if (originStop.id === "" && fileCfg.originId !== "") {
       originStop = { id: fileCfg.originId, name: fileCfg.originName }
@@ -134,7 +146,7 @@ Panel {
       destField.text = destStop.name
     }
     suggestions = []; activeField = ""
-    keyCatcher.forceActiveFocus()
+    stopEditing()
     planTrip()
   }
 
@@ -268,7 +280,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: originField.activeFocus || destField.activeFocus
+      blocked: root.editing
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -326,8 +338,17 @@ Panel {
                 root.queueSearch(text, "origin")
               }
             }
-            onActiveFocusChanged: if (activeFocus) root.activeField = "origin"
-            Keys.onEscapePressed: { text = ""; keyCatcher.forceActiveFocus() }
+            onActiveFocusChanged: {
+              if (activeFocus) root.activeField = "origin"
+              root.syncEditing()
+            }
+            Keys.onEscapePressed: { text = ""; root.stopEditing() }
+            TapHandler {
+              onTapped: {
+                root.editing = true
+                originField.forceActiveFocus()
+              }
+            }
           }
           Button {
             id: locBtn
@@ -373,8 +394,17 @@ Panel {
                 root.queueSearch(text, "dest")
               }
             }
-            onActiveFocusChanged: if (activeFocus) root.activeField = "dest"
-            Keys.onEscapePressed: { text = ""; keyCatcher.forceActiveFocus() }
+            onActiveFocusChanged: {
+              if (activeFocus) root.activeField = "dest"
+              root.syncEditing()
+            }
+            Keys.onEscapePressed: { text = ""; root.stopEditing() }
+            TapHandler {
+              onTapped: {
+                root.editing = true
+                destField.forceActiveFocus()
+              }
+            }
           }
         }
 
