@@ -40,32 +40,23 @@ omarchy bar move io.github.ozdadirri.sydney-train-planer --section right
 
 ## Configure
 
-Pick **one** of these (checked in this order, first wins):
+Either set it in the UI — **Setup → Plugins → Sydney Train Planner** — filling
+in `apiKey` (and optionally a default origin/destination) —
 
-1. **Setup → Plugins → Sydney Train Planner** — fill in `apiKey`.
+**or** drop a file at `~/.local/state/omarchy/settings/syd-train.json`:
 
-2. **State file** — create `~/.local/state/omarchy/settings/syd-train.json`:
+```json
+{
+  "apiKey": "YOUR_TFNSW_KEY",
+  "originId": "",
+  "originName": "",
+  "destinationId": "",
+  "destinationName": ""
+}
+```
 
-   ```sh
-   mkdir -p ~/.local/state/omarchy/settings
-   cat > ~/.local/state/omarchy/settings/syd-train.json <<'EOF'
-   { "apiKey": "YOUR_TFNSW_KEY" }
-   EOF
-   ```
-
-3. **Plugin folder** — create `config.json` next to the QML files:
-
-   ```sh
-   echo '{ "apiKey": "YOUR_TFNSW_KEY" }' \
-     > ~/.config/omarchy/plugins/io.github.ozdadirri.sydney-train-planer/config.json
-   ```
-
-All three are watched live — no shell restart needed. The pill stops showing
-`set key` within a second of a valid key landing.
-
-You don't need to set an origin/destination: open the popup, search a From and
-To, and **tap a journey to pin it** as the bar default (saved to the state
-file automatically).
+Leave the origin/destination fields blank and just pick them in the popup —
+tapping a journey pins it and fills these in automatically.
 
 > The key is read at runtime and never leaves your machine. Do not commit a
 > file that contains it; `.gitignore` already excludes `syd-train.json`.

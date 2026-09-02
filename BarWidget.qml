@@ -13,30 +13,18 @@ BarWidget {
   id: root
   moduleName: "io.github.ozdadirri.sydney-train-planer"
 
-  // ---- config -------------------------------------------------------------
-  // Three sources, highest priority first:
-  //   1. settings   — inline fields on the shell.json bar entry (Setup > Plugins)
-  //   2. fileCfg    — ~/.local/state/omarchy/settings/syd-train.json
-  //   3. dirCfg     — config.json inside the plugin directory (convenience)
-  property var fileCfg: ({})
-  property var dirCfg: ({})
+  // ---- settings (inline on the shell.json entry) + on-disk config ----------
+  readonly property var cfg: settings || ({})
+  readonly property string apiKey: String(cfg.apiKey || fileCfg.apiKey || "")
+  readonly property int resultCount: Math.max(1, Math.min(8, parseInt(cfg.results, 10) || 4))
+  readonly property int refreshSeconds: Math.max(20, parseInt(cfg.refreshSeconds, 10) || 60)
 
-  function cfgStr(key) {
-    var s = (settings && settings[key] !== undefined && settings[key] !== null) ? settings[key] : ""
-    var f = (fileCfg && fileCfg[key] !== undefined && fileCfg[key] !== null) ? fileCfg[key] : ""
-    var d = (dirCfg && dirCfg[key] !== undefined && dirCfg[key] !== null) ? dirCfg[key] : ""
-    return String(s || f || d || "")
-  }
-
-  readonly property string apiKey: cfgStr("apiKey")
-  readonly property int resultCount: Math.max(1, Math.min(8, parseInt(cfgStr("results"), 10) || 4))
-  readonly property int refreshSeconds: Math.max(20, parseInt(cfgStr("refreshSeconds"), 10) || 60)
-
-  // Effective default trip: an in-panel pick (persisted to the state file) wins.
-  readonly property string originId: cfgStr("originId")
-  readonly property string originName: cfgStr("originName")
-  readonly property string destinationId: cfgStr("destinationId")
-  readonly property string destinationName: cfgStr("destinationName")
+  // Effective default trip: an in-panel pick (persisted to fileCfg) wins,
+  // otherwise the values typed into the plugin settings form.
+  readonly property string originId: fileCfg.originId || String(cfg.originId || "")
+  readonly property string originName: fileCfg.originName || String(cfg.originName || "")
+  readonly property string destinationId: fileCfg.destinationId || String(cfg.destinationId || "")
+  readonly property string destinationName: fileCfg.destinationName || String(cfg.destinationName || "")
   readonly property bool hasDefaultTrip: originId !== "" && destinationId !== ""
 
   // ---- runtime state -----------------------------------------------------
@@ -91,63 +79,31 @@ BarWidget {
     tripProc.running = true
   }
 
-  function parseCfg(raw) {
-    try {
-      var o = JSON.parse(String(raw || "{}"))
-      return (o && typeof o === "object") ? o : ({})
-    } catch (e) {
-      return ({})
-    }
-  }
-
   function pinTrip(origin, destination) {
-    var merged = {}
-    for (var k in dirCfg) merged[k] = dirCfg[k]
-    for (var k2 in fileCfg) merged[k2] = fileCfg[k2]
-    merged.originId = origin.id
-    merged.originName = origin.name
-    merged.destinationId = destination.id
-    merged.destinationName = destination.name
-    root.fileCfg = merged
-    configFile.setText(JSON.stringify(merged, null, 2) + "\n")
+    fileCfg.originId = origin.id
+    fileCfg.originName = origin.name
+    fileCfg.destinationId = destination.id
+    fileCfg.destinationName = destination.name
+    configFile.writeAdapter()
     Qt.callLater(root.refresh)
   }
 
-  // FileView cannot watch a file whose directory does not exist yet.
-  Process {
-    id: ensureDirProc
-    command: ["mkdir", "-p", Quickshell.env("HOME") + "/.local/state/omarchy/settings"]
-  }
-
-  // Primary config / where in-panel picks are persisted.
+  // ---- on-disk config: ~/.local/state/omarchy/settings/syd-train.json -----
   FileView {
     id: configFile
     path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/syd-train.json"
     watchChanges: true
-    atomicWrites: true
     printErrors: false
-    onLoaded: root.fileCfg = root.parseCfg(text())
-    onLoadFailed: root.fileCfg = ({})
     onFileChanged: reload()
-  }
-
-  // Convenience for cloned installs: edit config.json in the plugin folder.
-  FileView {
-    id: dirConfigFile
-    path: Qt.resolvedUrl("config.json").toString().replace(/^file:\/\//, "")
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.dirCfg = root.parseCfg(text())
-    onLoadFailed: root.dirCfg = ({})
-    onFileChanged: reload()
-  }
-
-  Component.onCompleted: {
-    ensureDirProc.running = true
-    Qt.callLater(function() {
-      configFile.reload()
-      dirConfigFile.reload()
-    })
+    onAdapterUpdated: writeAdapter()
+    JsonAdapter {
+      id: fileCfg
+      property string apiKey: ""
+      property string originId: ""
+      property string originName: ""
+      property string destinationId: ""
+      property string destinationName: ""
+    }
   }
 
   Process {
