@@ -6,8 +6,10 @@ import qs.Ui
 import "Model.js" as Model
 
 // Trip-planner popup. Built on KeyboardPanel (not PopupCard) so the origin /
-// destination text fields accept keyboard input, the same reason the built-in
-// weather plugin uses KeyboardPanel for its location search.
+// destination text fields accept keyboard input, and following the network
+// plugin's passphrase-prompt pattern for the field wiring: text bound to a
+// backing property, an explicit `editing` flag gating PanelKeyCatcher, and
+// Qt.callLater(forceActiveFocus).
 Panel {
   id: root
   moduleName: "io.github.ozdadirri.sydney-train-planer"
@@ -28,10 +30,12 @@ Panel {
   readonly property int resultCount: 4
 
   FileView {
+    id: configFile
     path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/syd-train.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
+    onLoaded: Qt.callLater(root.seedFromConfig)
     JsonAdapter {
       id: fileCfg
       property string apiKey: ""
@@ -56,6 +60,7 @@ Panel {
     Qt.callLater(function() { if (root.opened) setCenterHoverRevealSuppressed(true) })
   }
   function close() {
+    editing = false
     setCenterHoverRevealSuppressed(false)
     root.controller.hide()
   }
@@ -74,6 +79,14 @@ Panel {
   }
 
   // ---- planner state --------------------------------------------------
+  // Field contents live in these backing properties. Code writes here; the
+  // change handlers push the value into the TextField imperatively (a plain
+  // `text:` binding would be silently broken the first time the user types).
+  property string originText: ""
+  property string destText: ""
+  onOriginTextChanged: if (originField.text !== originText) originField.text = originText
+  onDestTextChanged: if (destField.text !== destText) destField.text = destText
+
   property var originStop: ({ id: "", name: "" })
   property var destStop: ({ id: "", name: "" })
   readonly property bool ready: originStop.id !== "" && destStop.id !== "" && apiKey !== ""
@@ -90,25 +103,39 @@ Panel {
   property string _pendingField: ""
 
   // True while a text field is being edited. PanelKeyCatcher grabs keys with
-  // Keys.BeforeItem priority (for vim-style nav), so it must be `blocked`
-  // while typing or every keystroke is swallowed as a navigation command.
+  // Keys.BeforeItem priority (vim-style nav), so it MUST be `blocked` while
+  // typing or every keystroke is swallowed as a navigation command. This is
+  // an explicit flag, not `field.activeFocus`, so it flips the instant the
+  // field is tapped rather than one focus-event later.
   property bool editing: false
-  function syncEditing() {
-    editing = originField.activeFocus || destField.activeFocus
-  }
   function stopEditing() {
     editing = false
-    keyCatcher.forceActiveFocus()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  // When the panel opens with no trip yet, focus the origin field straight
+  // away so the user can just start typing (mirrors the network plugin
+  // focusing its passphrase field on show).
+  onOpenedChanged: {
+    editing = false
+    if (opened && originStop.id === "") {
+      Qt.callLater(function() {
+        if (!root.opened) return
+        root.editing = true
+        root.activeField = "origin"
+        originField.forceActiveFocus()
+      })
+    }
   }
 
   function seedFromConfig() {
     if (originStop.id === "" && fileCfg.originId !== "") {
       originStop = { id: fileCfg.originId, name: fileCfg.originName }
-      originField.text = fileCfg.originName
+      originText = fileCfg.originName
     }
     if (destStop.id === "" && fileCfg.destinationId !== "") {
       destStop = { id: fileCfg.destinationId, name: fileCfg.destinationName }
-      destField.text = fileCfg.destinationName
+      destText = fileCfg.destinationName
     }
     if (ready) planTrip()
   }
@@ -131,19 +158,20 @@ Panel {
     var o = originStop, d = destStop
     originStop = { id: d.id, name: d.name }
     destStop = { id: o.id, name: o.name }
-    originField.text = originStop.name
-    destField.text = destStop.name
-    suggestions = []; activeField = ""
+    originText = originStop.name
+    destText = destStop.name
+    suggestions = []; activeField = ""; editing = false
     planTrip()
   }
 
   function chooseSuggestion(item) {
+    var picked = { id: item.id, name: item.disassembledName || item.name }
     if (activeField === "origin") {
-      originStop = { id: item.id, name: item.disassembledName || item.name }
-      originField.text = originStop.name
+      originStop = picked
+      originText = picked.name
     } else if (activeField === "dest") {
-      destStop = { id: item.id, name: item.disassembledName || item.name }
-      destField.text = destStop.name
+      destStop = picked
+      destText = picked.name
     }
     suggestions = []; activeField = ""
     stopEditing()
@@ -233,7 +261,7 @@ Panel {
               id: Model.coordId(j.latitude, j.longitude),
               name: "Current location" + (j.city ? " (" + j.city + ")" : "")
             }
-            originField.text = root.originStop.name
+            root.originText = root.originStop.name
             root.status = ""
             root.planTrip()
             return
@@ -333,20 +361,18 @@ Panel {
             placeholderText: "Origin stop"
             foreground: root.bar.foreground
             onTextChanged: {
-              if (text !== root.originStop.name) {
-                root.originStop = { id: "", name: text }
-                root.queueSearch(text, "origin")
-              }
+              if (text === root.originText) return
+              root.originText = text
+              root.originStop = { id: "", name: text }
+              root.queueSearch(text, "origin")
             }
-            onActiveFocusChanged: {
-              if (activeFocus) root.activeField = "origin"
-              root.syncEditing()
-            }
-            Keys.onEscapePressed: { text = ""; root.stopEditing() }
+            onActiveFocusChanged: if (activeFocus) { root.editing = true; root.activeField = "origin" }
+            Keys.onEscapePressed: { root.originText = ""; root.stopEditing() }
             TapHandler {
               onTapped: {
                 root.editing = true
-                originField.forceActiveFocus()
+                root.activeField = "origin"
+                Qt.callLater(function() { originField.forceActiveFocus() })
               }
             }
           }
@@ -389,20 +415,18 @@ Panel {
             placeholderText: "Destination stop"
             foreground: root.bar.foreground
             onTextChanged: {
-              if (text !== root.destStop.name) {
-                root.destStop = { id: "", name: text }
-                root.queueSearch(text, "dest")
-              }
+              if (text === root.destText) return
+              root.destText = text
+              root.destStop = { id: "", name: text }
+              root.queueSearch(text, "dest")
             }
-            onActiveFocusChanged: {
-              if (activeFocus) root.activeField = "dest"
-              root.syncEditing()
-            }
-            Keys.onEscapePressed: { text = ""; root.stopEditing() }
+            onActiveFocusChanged: if (activeFocus) { root.editing = true; root.activeField = "dest" }
+            Keys.onEscapePressed: { root.destText = ""; root.stopEditing() }
             TapHandler {
               onTapped: {
                 root.editing = true
-                destField.forceActiveFocus()
+                root.activeField = "dest"
+                Qt.callLater(function() { destField.forceActiveFocus() })
               }
             }
           }
@@ -554,7 +578,10 @@ Panel {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.pinned(root.originStop, root.destStop)
+              onClicked: {
+                root.editing = false
+                root.pinned(root.originStop, root.destStop)
+              }
             }
           }
         }
