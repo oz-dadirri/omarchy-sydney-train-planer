@@ -49,47 +49,39 @@ function tripUrl(originId, destinationId, yyyymmdd, hhmm) {
 
 // ---- response-size ceiling -------------------------------------------------
 //
-// Every curl call below is piped through `head -c` so a compromised or
-// MITM'd endpoint can't grow the response body past this many bytes,
-// regardless of Content-Length or chunked framing — curl's own
-// --max-filesize only limits downloads with a known Content-Length,
-// which does not reliably catch a chunked/streamed oversized body. `head
-// -c` reading LIMIT+1 bytes then closing its end of the pipe sends curl a
-// SIGPIPE and stops the transfer immediately, so the shared shell process
-// never buffers more than this ceiling no matter how much the endpoint
-// tries to send. 2 MiB is generous: a full TfNSW stop_finder/trip
-// response and an ipapi.co geolocation reply are all well under 200 KB in
-// practice.
+// No shell, no PATH lookups: curl is launched directly at an absolute
+// path (QProcess/Quickshell exec, not a shell interpreting a constructed
+// command string), so there's nothing here for a shadow executable
+// earlier in $PATH to hijack, and no shell metacharacter surface at all.
+// The one binary this plugin depends on either way is verified to exist
+// at this exact path before every launch (see requireCurlBinary).
+var CURL_BIN = "/usr/bin/curl"
+
+// 2 MiB is generous: a full TfNSW stop_finder/trip response and an
+// ipapi.co geolocation reply are all well under 200 KB in practice.
+// Enforced as a real producer-side cap by the caller (see the stdout
+// StdioCollector's onRead handler in each *.qml Process using curlArgs/
+// curlArgsNoAuth below): once the running byte total crosses this line,
+// the caller sends curl SIGKILL directly — curl is that Process's sole,
+// directly-owned child (no shell, no `head`, nothing else in between),
+// so there is no descendant left holding the pipe open afterward. This
+// is real enforcement against however much a compromised/MITM'd endpoint
+// tries to send, not reliant on Content-Length (curl's own
+// --max-filesize only works when that header is present and honest,
+// which a malicious endpoint need not do).
 var MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
-// Single-quote a string for safe use as one word in a POSIX shell command
-// line: close the quote, emit an escaped literal quote, reopen it.
-function shellQuote(s) {
-  return "'" + String(s || "").replace(/'/g, "'\\''") + "'"
-}
-
-function cappedPipeline(curlCommandLine) {
-  return curlCommandLine + " | head -c " + String(MAX_RESPONSE_BYTES + 1)
-}
-
-// True once a response has hit (or been made to hit, by an oversized/
-// malicious body) the head -c ceiling above — callers should treat this
-// as a failure and skip JSON.parse entirely rather than parse a body
-// truncated mid-token. `text.length` here is UTF-16 code units rather
-// than the exact byte count head -c enforced, but that only matters for
-// distinguishing "exactly at the ceiling" from "one code point over" —
-// either way, a real TfNSW/ipapi.co reply is never within two orders of
-// magnitude of this limit, so the approximation can't mask a real
-// oversized-response condition.
+// True once a response body reached (or was made to reach, by an
+// oversized/malicious body cut short by the SIGKILL above) the ceiling
+// — callers should treat this as a failure and skip JSON.parse entirely
+// rather than parse a body that may be truncated mid-token.
 function isOversizedResponse(text) {
   return String(text || "").length > MAX_RESPONSE_BYTES
 }
 
 // curl argv shared by every authenticated request (stop_finder, trip).
 // `-fsS` = fail on HTTP error, silent, still show errors. Short timeouts
-// keep a flaky network from wedging the UI. Returned as a `sh -c` argv
-// (see cappedPipeline) rather than a plain curl argv, so every caller
-// gets the response-size ceiling above for free.
+// keep a flaky network from wedging the UI.
 //
 // The API key is deliberately not a curl argument: process argv is
 // world-readable via /proc/<pid>/cmdline and `ps`, so a key embedded in a
@@ -98,20 +90,15 @@ function isOversizedResponse(text) {
 // curl to read a config file from its own stdin; the caller writes the
 // header there over the pipe (see authConfigStdin below), which is a
 // private fd between Quickshell and the curl child, invisible to procfs
-// and never appears in a process listing or a `qs log`/shell trace. `sh
-// -c 'cmd1 | cmd2'` still hands its own stdin straight to cmd1 (curl)
-// unredirected, so that write-then-close-stdin pattern keeps working
-// unchanged through this pipeline.
+// and never appears in a process listing or a `qs log`/shell trace.
 function curlArgs(url, maxSeconds) {
-  return ["sh", "-c", cappedPipeline(
-    "curl -fsS --max-time " + String(maxSeconds || 8) + " -K - " + shellQuote(url))]
+  return [CURL_BIN, "-fsS", "--max-time", String(maxSeconds || 8), "-K", "-", url]
 }
 
 // Same as curlArgs, for the one caller (Panel.qml's "use my location")
 // that has no Authorization header to send.
 function curlArgsNoAuth(url, maxSeconds) {
-  return ["sh", "-c", cappedPipeline(
-    "curl -fsS --max-time " + String(maxSeconds || 8) + " " + shellQuote(url))]
+  return [CURL_BIN, "-fsS", "--max-time", String(maxSeconds || 8), url]
 }
 
 // The curl config-file line carrying the Authorization header, fed over

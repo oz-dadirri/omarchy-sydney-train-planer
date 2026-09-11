@@ -263,7 +263,18 @@ Panel {
       running = true
     }
     stdout: StdioCollector {
-      waitForEnd: true
+      id: stopOut
+      // waitForEnd: false is load-bearing, not cosmetic — it's what makes
+      // `text`/`dataChanged` update per chunk as it arrives instead of
+      // only once at the very end. That's what onDataChanged below needs
+      // to enforce Model.MAX_RESPONSE_BYTES as a real producer-side cap:
+      // curl is this Process's sole, directly-owned child (launched at
+      // an absolute path, no shell in between — see Model.curlArgs), so
+      // killing it here on overflow leaves nothing orphaned holding the
+      // pipe open, and does so before an adversarial/compromised
+      // endpoint can push much past the ceiling rather than only after
+      // it has already finished sending everything it wanted to.
+      onDataChanged: if (text.length > Model.MAX_RESPONSE_BYTES) stopProc.signal(9)
       onStreamFinished: {
         root.suggestions = Model.parseStopFinder(text)
         if (stopProc.pending !== stopProc.active) Qt.callLater(stopProc.fire)
@@ -288,7 +299,11 @@ Panel {
       pendingAuth = ""
     }
     stdout: StdioCollector {
-      waitForEnd: true
+      id: tripOut
+      // See stopOut above for why waitForEnd: false + onDataChanged (not
+      // waitForEnd: true) is what makes this a real producer-side cap.
+      waitForEnd: false
+      onDataChanged: if (text.length > Model.MAX_RESPONSE_BYTES) tripProc.signal(9)
       onStreamFinished: {
         var parsed = Model.parseTrip(text)
         root.trips = parsed
@@ -311,11 +326,15 @@ Panel {
     id: geoProc
     command: Model.curlArgsNoAuth("https://ipapi.co/json/", 6)
     stdout: StdioCollector {
-      waitForEnd: true
+      id: geoOut
+      // See stopOut above for why waitForEnd: false + onDataChanged (not
+      // waitForEnd: true) is what makes this a real producer-side cap.
+      waitForEnd: false
+      onDataChanged: if (text.length > Model.MAX_RESPONSE_BYTES) geoProc.signal(9)
       onStreamFinished: {
         root.locating = false
-        // Reject an overflowed (truncated-by-head-c) body outright rather
-        // than feeding it to JSON.parse — see Model.MAX_RESPONSE_BYTES.
+        // Reject an overflowed response outright rather than feeding it
+        // to JSON.parse — see Model.MAX_RESPONSE_BYTES.
         if (Model.isOversizedResponse(text)) { root.status = "Could not detect location"; return }
         try {
           var j = JSON.parse(String(text || "{}"))

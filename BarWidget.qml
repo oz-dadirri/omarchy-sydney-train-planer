@@ -140,8 +140,22 @@ BarWidget {
       pendingAuth = ""
     }
     stdout: StdioCollector {
-      waitForEnd: true
+      id: tripOut
+      // waitForEnd: false is load-bearing, not cosmetic — it's what makes
+      // `text`/`dataChanged` update per chunk as it arrives instead of
+      // only once at the very end, which is what onDataChanged below
+      // needs to enforce Model.MAX_RESPONSE_BYTES as a real producer-side
+      // cap: curl is this Process's sole, directly-owned child (launched
+      // at an absolute path, no shell in between — see Model.curlArgs),
+      // so killing it here on overflow leaves nothing orphaned holding
+      // the pipe open, and does so before an adversarial/compromised
+      // endpoint can push much past the ceiling.
+      waitForEnd: false
+      onDataChanged: if (text.length > Model.MAX_RESPONSE_BYTES) tripProc.signal(9)
       onStreamFinished: {
+        // Reject an overflowed response outright rather than feeding it
+        // to JSON.parse — Model.parseTrip already guards this, but the
+        // trim() below runs first regardless.
         var raw = String(text || "").trim()
         if (!raw) return
         var parsed = Model.parseTrip(raw)
