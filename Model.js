@@ -47,24 +47,71 @@ function tripUrl(originId, destinationId, yyyymmdd, hhmm) {
     + "&version=10.2.1.42"
 }
 
-// curl argv shared by every request. `-fsS` = fail on HTTP error, silent,
-// still show errors. Short timeouts keep a flaky network from wedging the UI.
+// ---- response-size ceiling -------------------------------------------------
 //
-// The API key is deliberately NOT here: process argv (this array) is
+// Every curl call below is piped through `head -c` so a compromised or
+// MITM'd endpoint can't grow the response body past this many bytes,
+// regardless of Content-Length or chunked framing — curl's own
+// --max-filesize only limits downloads with a known Content-Length,
+// which does not reliably catch a chunked/streamed oversized body. `head
+// -c` reading LIMIT+1 bytes then closing its end of the pipe sends curl a
+// SIGPIPE and stops the transfer immediately, so the shared shell process
+// never buffers more than this ceiling no matter how much the endpoint
+// tries to send. 2 MiB is generous: a full TfNSW stop_finder/trip
+// response and an ipapi.co geolocation reply are all well under 200 KB in
+// practice.
+var MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+// Single-quote a string for safe use as one word in a POSIX shell command
+// line: close the quote, emit an escaped literal quote, reopen it.
+function shellQuote(s) {
+  return "'" + String(s || "").replace(/'/g, "'\\''") + "'"
+}
+
+function cappedPipeline(curlCommandLine) {
+  return curlCommandLine + " | head -c " + String(MAX_RESPONSE_BYTES + 1)
+}
+
+// True once a response has hit (or been made to hit, by an oversized/
+// malicious body) the head -c ceiling above — callers should treat this
+// as a failure and skip JSON.parse entirely rather than parse a body
+// truncated mid-token. `text.length` here is UTF-16 code units rather
+// than the exact byte count head -c enforced, but that only matters for
+// distinguishing "exactly at the ceiling" from "one code point over" —
+// either way, a real TfNSW/ipapi.co reply is never within two orders of
+// magnitude of this limit, so the approximation can't mask a real
+// oversized-response condition.
+function isOversizedResponse(text) {
+  return String(text || "").length > MAX_RESPONSE_BYTES
+}
+
+// curl argv shared by every authenticated request (stop_finder, trip).
+// `-fsS` = fail on HTTP error, silent, still show errors. Short timeouts
+// keep a flaky network from wedging the UI. Returned as a `sh -c` argv
+// (see cappedPipeline) rather than a plain curl argv, so every caller
+// gets the response-size ceiling above for free.
+//
+// The API key is deliberately not a curl argument: process argv is
 // world-readable via /proc/<pid>/cmdline and `ps`, so a key embedded in a
 // `-H "Authorization: ..."` argument leaks to any other process on the
 // machine for as long as the curl call is running. Instead `-K -` tells
 // curl to read a config file from its own stdin; the caller writes the
 // header there over the pipe (see authConfigStdin below), which is a
 // private fd between Quickshell and the curl child, invisible to procfs
-// and never appears in a process listing or a `qs log`/shell trace.
+// and never appears in a process listing or a `qs log`/shell trace. `sh
+// -c 'cmd1 | cmd2'` still hands its own stdin straight to cmd1 (curl)
+// unredirected, so that write-then-close-stdin pattern keeps working
+// unchanged through this pipeline.
 function curlArgs(url, maxSeconds) {
-  return [
-    "curl", "-fsS",
-    "--max-time", String(maxSeconds || 8),
-    "-K", "-",
-    url
-  ]
+  return ["sh", "-c", cappedPipeline(
+    "curl -fsS --max-time " + String(maxSeconds || 8) + " -K - " + shellQuote(url))]
+}
+
+// Same as curlArgs, for the one caller (Panel.qml's "use my location")
+// that has no Authorization header to send.
+function curlArgsNoAuth(url, maxSeconds) {
+  return ["sh", "-c", cappedPipeline(
+    "curl -fsS --max-time " + String(maxSeconds || 8) + " " + shellQuote(url))]
 }
 
 // The curl config-file line carrying the Authorization header, fed over
@@ -80,6 +127,9 @@ function authConfigStdin(apiKey) {
 
 // -> [{ id, name, disassembledName, type, isBest }]
 function parseStopFinder(raw) {
+  // Reject an overflowed (truncated-by-head-c) body outright rather than
+  // feeding it to JSON.parse — see MAX_RESPONSE_BYTES.
+  if (isOversizedResponse(raw)) return []
   try {
     var data = JSON.parse(String(raw || "{}"))
     var locs = data.locations || []
@@ -204,6 +254,9 @@ function legDetails(legs) {
 //       delayMin, changes, platform, lines:[..], modes:[..],
 //       originName, destName, legs:[..] }]
 function parseTrip(raw) {
+  // Reject an overflowed (truncated-by-head-c) body outright rather than
+  // feeding it to JSON.parse — see MAX_RESPONSE_BYTES.
+  if (isOversizedResponse(raw)) return []
   try {
     var data = JSON.parse(String(raw || "{}"))
     var journeys = data.journeys || []
@@ -305,7 +358,9 @@ if (typeof module !== "undefined") {
   module.exports = {
     stopFinderUrl: stopFinderUrl, tripUrl: tripUrl,
     isCoordId: isCoordId, coordId: coordId,
-    curlArgs: curlArgs, authConfigStdin: authConfigStdin, parseStopFinder: parseStopFinder,
+    curlArgs: curlArgs, curlArgsNoAuth: curlArgsNoAuth, authConfigStdin: authConfigStdin,
+    isOversizedResponse: isOversizedResponse, MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES,
+    parseStopFinder: parseStopFinder,
     parseTrip: parseTrip,
     countdownLabel: countdownLabel, delayLabel: delayLabel,
     punctuality: punctuality, normalizeConfig: normalizeConfig,

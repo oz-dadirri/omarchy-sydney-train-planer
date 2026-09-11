@@ -309,11 +309,14 @@ Panel {
 
   Process {
     id: geoProc
-    command: ["curl", "-fsS", "--max-time", "6", "https://ipapi.co/json/"]
+    command: Model.curlArgsNoAuth("https://ipapi.co/json/", 6)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         root.locating = false
+        // Reject an overflowed (truncated-by-head-c) body outright rather
+        // than feeding it to JSON.parse — see Model.MAX_RESPONSE_BYTES.
+        if (Model.isOversizedResponse(text)) { root.status = "Could not detect location"; return }
         try {
           var j = JSON.parse(String(text || "{}"))
           if (j.latitude && j.longitude) {
